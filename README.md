@@ -2,5 +2,5 @@
 
 ## Usage
 
-The standard Alexa voice commands for turning on, turning off, and dimming lights can be used for devices exposed via HALE. Sadly some voice commands are far less reliable than others and this is a problem on the Alexa voice processing side and nothing HALE has control over. The most reliable forms from my testing seems to be "Alexa, Turn On <foo>" and "Alexa, Turn Off <foo>".
+Control your home only with your voice with ZEN you personal virtual assistant. Need to turn on the lights just with a word, manage the devices in your home with just one addon ZEN.
 

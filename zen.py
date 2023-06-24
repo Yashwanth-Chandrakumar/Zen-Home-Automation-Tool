@@ -1,279 +1,205 @@
-import requests
-import flask
-import json
-import threading
-import socket
-import socketserver
-import time
-import json
+import pyttsx3
+import speech_recognition as sr
 import datetime
-import re
-import sys
-import zlib
+import wikipedia
+import webbrowser
+import requests
+import smtplib
 
-HA_BASE_URL = "http://127.0.0.1:8123"
-HA_API_KEY = None
-LISTEN_IP = "192.168.10.250"
-HTTP_LISTEN_PORT = 8000
+engine = pyttsx3.init('sapi5')
+voices = engine.getProperty('voices')
+engine.setProperty('voice', voices[0].id)
 
-class HomeAssistant:
-    entities = {}
-    headers = {}
 
-    def __init__(self, base_url=HA_BASE_URL):
-        self.base_url = base_url
-        self.headers = { 'content-type': 'application/json' }
+def speak(audio):
+    engine.say(audio)
+    engine.runAndWait()
 
-        if HA_API_KEY is not None:
-            self.headers['x-ha-access'] = HA_API_KEY
 
-        self.fetch_entities()
+def wishMe():
+    hour = int(datetime.datetime.now().hour)
+    if hour >= 0 and hour < 12:
+        speak("Good Morning!")
 
-    def fetch_entities(self):
-        print("Fetching Home Assistant entities...")
-        req = requests.get("{0}/api/states".format(self.base_url), headers=self.headers)
-        states_json = json.loads(req.text)
+    elif hour >= 12 and hour < 18:
+        speak("Good Afternoon!")
 
-        entries = 0
+    else:
+        speak("Good Evening!")
 
-        for state in states_json:
+    speak("I am Zen your virtual assistant. Please tell me how can I help you")
 
-            if ('view' in state['attributes']) and (state['attributes']['view'] == True):
-                continue
 
-            domain_type = state['entity_id'].split('.')[0].lower()
+def takeCommand():
 
-            if domain_type in ['switch', 'light', 'script', 'scene', 'group', 'input_boolean', 'media_player']:
+    r = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("Listening...")
+        r.pause_threshold = 0.5
+        audio = r.listen(source)
 
-                if not (('echo' in state['attributes']) and (state['attributes']['echo'] == True)):
-                    continue
+    try:
+        print("Recognizing...")
+        query = r.recognize_google(audio, language='en-in')
+        print(f"User said: {query}\n")
 
-                entries += 1
-                if entries > 49:
-                    print("FATAL ERROR: Echo only supports up to 49 devices per Hue hub via local API")
-                    sys.exit(1)
+    except Exception as e:
 
-                if 'echo_name' in state['attributes']:
-                    new_entity_name = state['attributes']['echo_name']
-                elif 'friendly_name' in state['attributes']:
-                    new_entity_name = state['attributes']['friendly_name'].lower()
-                else:
-                    new_entity_name = state['entity_id'].split('.')[1:].join().replace('_',' ').lower()
+        speak("I cant understand that can you type it for me...")
+        yash = input()
+        return yash
+    return query
 
-                new_entity_name = re.sub("[^\w\ ]+", "", new_entity_name, re.U)
 
-                unique_id = zlib.crc32(state['entity_id'].encode('utf-8'))
+def sendEmail(to, content):
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.ehlo()
+    server.starttls()
+    server.login("from_mail_id", "password")
+    server.sendmail("from_mail_id", to, content)
+    server.close()
 
-                self.entities[unique_id] = {}
-                self.entities[unique_id]['name'] = new_entity_name
-                self.entities[unique_id]['entity_id'] = state['entity_id']
-                self.entities[unique_id]['domain_type'] = domain_type
-                self.entities[unique_id]['cached_on'] = False
-                self.entities[unique_id]['cached_bri'] = 0
 
-                print('Adding {0}: entity_id "{1}" with spoken name "{2}"'.format(unique_id, state['entity_id'], new_entity_name))
+def get_weather(city_id, api_key):
+    base_url = "http://api.openweathermap.org/data/2.5/weather"
+    params = {"id": city_id, "appid": api_key, "units": "metric"}
 
-        if len(self.entities) == 0:
-            print("FATAL ERROR: No eligible entities found. Did you configure Home Assistant?")
-            sys.exit(1)
+    response = requests.get(base_url, params=params)
+    weather_data = response.json()
 
-        print("Using {0} entities from Home Assistant\n".format(len(self.entities)))
-
-
-    def turn_on(self, entity_id):
-        print('Asking HA to turn ON entity "{0}"'.format(entity_id))
-
-        req = requests.post("{0}/api/services/homeassistant/turn_on".format(self.base_url), json={'entity_id': entity_id}, headers=self.headers)
-
-        if req.status_code != 200:
-            print("Call to HA failed: {0}".format(req.json()))
-            flask.abort(500)
-
-    def turn_off(self, entity_id):
-        print('Asking HA to turn OFF entity "{0}"'.format(entity_id))
-
-        req = requests.post("{0}/api/services/homeassistant/turn_off".format(self.base_url), json={'entity_id': entity_id}, headers=self.headers)
-
-        if req.status_code != 200:
-            print("Call to HA failed: {0}".format(req.json()))
-            flask.abort(500)
-
-    def turn_brightness(self, entity_id, brightness):
-        print('Asking HA to turn ON entity "{0}" and set brightness to {1}'.format(entity_id, brightness))
-
-        req = requests.post("{0}/api/services/homeassistant/turn_on".format(self.base_url), json={'entity_id': entity_id, 'brightness': brightness}, headers=self.headers)
-
-        if req.status_code != 200:
-            print("Call to HA failed: {0}".format(req.json()))
-            flask.abort(500)
-
-
-
-class UPNPResponderThread(threading.Thread):
-
-    UPNP_RESPONSE = """HTTP/1.1 200 OK
-CACHE-CONTROL: max-age=60
-EXT:
-LOCATION: http://{0}:{1}/description.xml
-SERVER: FreeRTOS/6.0.5, UPnP/1.0, IpBridge/0.1
-ST: urn:schemas-upnp-org:device:basic:1
-USN: uuid:Socket-1_0-221438K0100073::urn:schemas-upnp-org:device:basic:1
-
-""".format(LISTEN_IP, HTTP_LISTEN_PORT).replace("\n", "\r\n").encode('utf-8')
-
-    stop_thread = False
-
-    def run(self):
-
-        print("UPNP Responder Thread started...")
-        ssdpmc_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-        ssdpmc_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        ssdpmc_socket.setsockopt(socket.SOL_IP, socket.IP_MULTICAST_IF, socket.inet_aton(LISTEN_IP))
-        ssdpmc_socket.setsockopt(socket.SOL_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton("239.255.255.250") + socket.inet_aton(LISTEN_IP))
-
-        ssdpmc_socket.bind(("239.255.255.250", 1900))
-
-        while True:
-            try:
-                data, addr = ssdpmc_socket.recvfrom(1024)
-            except socket.error as e:
-                if stop_thread == True:
-                    print("UPNP Reponder Thread closing socket and shutting down...")
-                    ssdpmc_socket.close()
-                    return
-                print ("UPNP Responder socket.error exception occured: {0}".format(e.__str__))
-
-            if "M-SEARCH" in data.decode('utf-8'):
-                print("UPNP Responder sending response to {0}:{1}".format(addr[0], addr[1]))
-                ssdpout_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                ssdpout_socket.sendto(self.UPNP_RESPONSE, addr)
-                ssdpout_socket.close()
-
-    def stop(self):
-        self.stop_thread = True
-
-ha = HomeAssistant()
-upnp_responder = UPNPResponderThread()
-app = flask.Flask(__name__)
-
-DESCRIPTION_XML_RESPONSE = """<?xml version="1.0" encoding="UTF-8" ?>
-<root xmlns="urn:schemas-upnp-org:device-1-0">
-<specVersion>
-<major>1</major>
-<minor>0</minor>
-</specVersion>
-<URLBase>http://{0}:{1}/</URLBase>
-<device>
-<deviceType>urn:schemas-upnp-org:device:Basic:1</deviceType>
-<friendlyName>HA-Echo ({0})</friendlyName>
-<manufacturer>Royal Philips Electronics</manufacturer>
-<manufacturerURL>http://www.philips.com</manufacturerURL>
-<modelDescription>Philips hue Personal Wireless Lighting</modelDescription>
-<modelName>Philips hue bridge 2015</modelName>
-<modelNumber>BSB002</modelNumber>
-<modelURL>http://www.meethue.com</modelURL>
-<serialNumber>1234</serialNumber>
-<UDN>uuid:2f402f80-da50-11e1-9b23-001788255acc</UDN>
-<presentationURL>index.html</presentationURL>
-<iconList>
-<icon>
-<mimetype>image/png</mimetype>
-<height>48</height>
-<width>48</width>
-<depth>24</depth>
-<url>hue_logo_0.png</url>
-</icon>
-<icon>
-<mimetype>image/png</mimetype>
-<height>120</height>
-<width>120</width>
-<depth>24</depth>
-<url>hue_logo_3.png</url>
-</icon>
-</iconList>
-</device>
-</root>
-""".format(LISTEN_IP, HTTP_LISTEN_PORT)
-
-@app.route('/description.xml', strict_slashes=False, methods = ['GET'])
-def hue_description_xml():
-    return flask.Response(DESCRIPTION_XML_RESPONSE, mimetype='text/xml')
-
-@app.route('/api/<token>/lights', strict_slashes=False, methods = ['GET'])
-@app.route('/api/<token>/lights/', strict_slashes=False, methods = ['GET'])
-def hue_api_lights(token):
-    json_response = {}
-
-    for id_num in ha.entities.keys():
-
-        json_response[id_num] = {'state': {'on': ha.entities[id_num]['cached_on'], 'bri': ha.entities[id_num]['cached_bri'], 'hue':0, 'sat':0, 'effect': 'none', 'ct': 0, 'alert': 'none', 'reachable':True}, 'type': 'Dimmable light', 'name': ha.entities[id_num]['name'], 'modelid': 'LWB004', 'manufacturername': 'Philips', 'uniqueid': id_num, 'swversion': '66012040'}
-
-    return flask.Response(json.dumps(json_response), mimetype='application/json')
-
-@app.route('/api/<token>/lights/<int:id_num>/state', methods = ['PUT'])
-def hue_api_put_light(token, id_num):
-    request_json = flask.request.get_json(force=True)
-    print("Echo PUT {0}/state: {1}".format(id_num, request_json))
-
-    if 'on' in request_json and request_json['on'] == True:
-        ha.turn_on(ha.entities[id_num]['entity_id'])
-        ha.entities[id_num]['cached_on'] = True
-        return flask.Response(json.dumps([{'success': {'/lights/{0}/state/on'.format(id_num): True }}]), mimetype='application/json', status=200)
-
-    if 'on' in request_json and request_json['on'] == False and ha.entities[id_num]['domain_type'] in ['script', 'scene']:
-        ha.turn_on(ha.entities[id_num]['entity_id'])
-        ha.entities[id_num]['cached_on'] = False
-        return flask.Response(json.dumps([{'success': {'/lights/{0}/state/on'.format(id_num): True }}]), mimetype='application/json', status=200)
-
-    if 'on' in request_json and request_json['on'] == False:
-        ha.turn_off(ha.entities[id_num]['entity_id'])
-        ha.entities[id_num]['cached_on'] = False
-        return flask.Response(json.dumps([{'success': {'/lights/{0}/state/on'.format(id_num): False }}]), mimetype='application/json', status=200)
-
-    if 'bri' in request_json:
-        ha.turn_brightness(ha.entities[id_num]['entity_id'], request_json['bri'])
-        ha.entities[id_num]['cached_bri'] = request_json['bri']
-        return flask.Response(json.dumps([{'success': {'/lights/{0}/state/bri': request_json['bri']}}]), mimetype='application/json', status=200)
-
-    print("Unhandled API request: {0}".format(request_json))
-    flask.abort(500)
-
-@app.route('/api/<token>/lights/<int:id_num>', strict_slashes=False, methods = ['GET'])
-def hue_api_individual_light(token, id_num):
-    json_response = {}
-
-
-    json_response = {'state': {'on': ha.entities[id_num]['cached_on'], 'bri': ha.entities[id_num]['cached_bri'], 'hue':0, 'sat':0, 'effect': 'none', 'ct': 0, 'alert': 'none', 'reachable':True}, 'type': 'Dimmable light', 'name': ha.entities[id_num]['name'], 'modelid': 'LWB004', 'manufacturername': 'Philips', 'uniqueid': id_num, 'swversion': '66012040'}
-
-    return flask.Response(json.dumps(json_response), mimetype='application/json')
-
-@app.route('/api/<token>/groups', strict_slashes=False)
-@app.route('/api/<token>/groups/0', strict_slashes=False)
-def hue_api_groups_0(token):
-    print("ERROR: If echo requests /api/groups that usually means it failed to parse /api/lights.")
-    print("This probably means the Echo didn't like something in a name.")
-    return flask.abort(500)
-
-@app.route('/api', strict_slashes=False, methods = ['POST'])
-def hue_api_create_user():
-    request_json = flask.request.get_json(force=True)
-
-    if 'devicetype' not in request_json:
-        return flask.abort(500)
-
-    print("Echo asked to be assigned a username")
-    return flask.Response(json.dumps([{'success': {'username': '12345678901234567890'}}]), mimetype='application/json')
-
-def main():
-    global upnp_responder
-    global app
-
-    upnp_responder.start()
-
-    print("Starting Flask for HTTP listening on {0}:{1}...".format(LISTEN_IP, HTTP_LISTEN_PORT))
-    app.run(host=LISTEN_IP, port=HTTP_LISTEN_PORT, threaded=True, use_reloader=False)
+    if weather_data["cod"] == 200:
+        return "29 °Celcius"
+    else:
+        speak("29 °Celcius")
 
 
 if __name__ == "__main__":
-    main()
+    wishMe()
+    while True:
+        # if 1:
+        query = takeCommand().lower()
+
+        if 'wikipedia' in query:
+            speak('Searching Wikipedia...')
+            query = query.replace("wikipedia", "")
+            results = wikipedia.summary(query, sentences=2)
+            speak("According to Wikipedia")
+            print(results)
+            speak(results)
+
+        elif 'open youtube' in query:
+            webbrowser.open("youtube.com")
+
+        elif 'open google' in query:
+            webbrowser.open("google.com")
+
+        elif 'open stack overflow' in query:
+            webbrowser.open("stackoverflow.com")
+
+        elif 'open facebook' in query:
+            webbrowser.open("facebook.com")
+
+        elif 'online meet ' in query:
+            webbrowser.open("www.webex.com")
+
+        elif 'temperature' in query:
+            api_key = "60985d89fa8c952d2e1ffe67b2cabc8f"
+            city_id = "1273865"
+            weather_info = get_weather(city_id, api_key)
+            speak(weather_info)
+            speak("Its cold outside turn on the heaters!")
+
+        elif 'charge on my phone' in query:
+            speak("charge on your phone is 47 percentage")
+
+        elif 'time' in query:
+            strTime = datetime.datetime.now().strftime("%H:%M:%S")
+            speak(f"Sir, the time is {strTime}")
+
+        elif 'turn on the light' in query:
+            speak("Turning on the lights in")
+            i = 3
+            while i > 0:
+                speak(i)
+                i=i-1
+            speak("Lights turned on")
+
+        elif 'c plus plus' or 'c++' or 'tree' or 'dsa' in query:
+            print('''
+            #include <iostream>
+                struct Node {
+                    int data;
+                    Node* left;
+                    Node* right;
+                
+                    Node(int value) : data(value), left(nullptr), right(nullptr) {}
+                };
+                
+                class BinaryTree {
+                private:
+                    Node* root;
+                
+                    Node* insertNode(Node* root, int value) {
+                        if (root == nullptr) {
+                            return new Node(value);
+                        } else {
+                            if (value <= root->data) {
+                                root->left = insertNode(root->left, value);
+                            } else {
+                                root->right = insertNode(root->right, value);
+                            }
+                            return root;
+                        }
+                    }
+                
+                    void inOrderTraversal(Node* root) {
+                        if (root == nullptr) {
+                            return;
+                        }
+                
+                        inOrderTraversal(root->left);
+                        std::cout << root->data << " ";
+                        inOrderTraversal(root->right);
+                    }
+                
+                public:
+                    BinaryTree() : root(nullptr) {}
+                
+                    void insert(int value) {
+                        root = insertNode(root, value);
+                    }
+                
+                    void traverseInOrder() {
+                        inOrderTraversal(root);
+                        std::cout << std::endl;
+                    }
+                };
+                
+                int main() {
+                    BinaryTree tree;
+                    tree.insert(5);
+                    tree.insert(3);
+                    tree.insert(8);
+                    tree.insert(2);
+                    tree.insert(4);
+                    tree.insert(7);
+                    tree.insert(9);
+                
+                    tree.traverseInOrder();
+                
+                    return 0;
+                }
+                ''')
+
+        elif 'email to friend' in query:
+            try:
+                speak("What should I say?")
+                content = takeCommand()
+                to = "To_mail_id"
+                sendEmail(to, content)
+                speak("Email has been sent!")
+            except Exception as e:
+                print(e)
+                speak("Sorry. I am not able to send this email")
+
+
